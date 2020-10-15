@@ -17,7 +17,7 @@ Check config file format (configure to your setting)
 Config file example: 
 filename of reference sequence (FASTA) : CAEC_haplo.fasta  
 filname of the aligned reads (sam format) : CAEC_haplo.sam
-SNP_thres (0.5 / ploidy) : 0.125
+SNP_thres : 0.125
 reconstruction_start : 1
 reconstruction_stop : 5000
 min_mapping_qual : 60
