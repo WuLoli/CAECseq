@@ -1,0 +1,269 @@
+import numpy as np
+from sklearn.cluster import KMeans
+from Bio import SeqIO
+from helper import *
+import os
+import sys
+
+with open(sys.argv[1], 'r') as f:
+    df = f.readlines()
+
+data = []
+for item in df:
+    data.append(item.strip('\n').split(' : '))
+    
+os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES']= data[-2][1]
+import tensorflow as tf
+import tensorflow.keras.backend as K
+from tensorflow.keras.layers import Layer, InputSpec
+
+# This class is  adopoted from Guo X., Liu X., Zhu E., Yin J. 2017. Deep Clustering with Convolutional Autoencoders.
+class ClusteringLayer(Layer):
+    def __init__(self, n_clusters, weights = None, alpha = 1.0, **kwargs):
+        if 'input_shape' not in kwargs and 'input_dim' in kwargs:
+            kwargs['input_shape'] = (kwargs.pop('input_dim'),)
+        super(ClusteringLayer, self).__init__(**kwargs)
+        self.n_clusters = n_clusters
+        self.alpha = alpha
+        self.initial_weights = weights
+        self.input_spec = InputSpec(ndim = 2)
+
+    def build(self, input_shape):
+        assert len(input_shape) == 2
+        input_dim = int(input_shape[1])
+        self.input_spec = InputSpec(dtype = K.floatx(), shape = (None, input_dim))
+        self.clusters = self.add_weight(shape = (self.n_clusters, input_dim), initializer = 'glorot_uniform', name = 'clusters')
+        if self.initial_weights is not None:
+            self.set_weights(self.initial_weights)
+            del self.initial_weights
+        self.built = True
+
+    def call(self, inputs, **kwargs):
+        q = 1.0 / (1.0 + (K.sum(K.square(K.expand_dims(inputs, axis = 1) - self.clusters), axis = 2) / self.alpha))
+        q **= (self.alpha + 1.0) / 2.0
+        q = K.transpose(K.transpose(q) / K.sum(q, axis = 1))
+        
+        return q
+
+zone_name = data[8][1] # zone name
+SNVmatrix_name = zone_name + '_SNV_matrix.txt' # SNP matrix file name
+SNVmatrix, SNVonehot = import_SNV(SNVmatrix_name)
+n_read, _, n_SNV, _ = SNVonehot.shape
+rank_record = [1, 0]
+ploidy = int(data[9][1])
+drop_prob = 0
+learning_rate = 10 ** -3
+lam = 0.1
+update_interval = 20 * 1
+n_pretrain_epoch = 100
+itermax = 2 * 10 ** 4
+batch_size = int(np.ceil(n_read / 20))
+len_code =  int(np.ceil(n_SNV / 4))
+kernel = [5, 5, 3]
+filters = [32, 64, 128]
+
+MEC_record = {}
+viral_record = {}
+MEC_threshold = float(data[12][1])
+
+while rank_record[1] - rank_record[0] != 1:
+    for ploidy_candidate in [ploidy, ploidy + 1]:
+        if ploidy_candidate not in MEC_record:
+            n_clusters = ploidy_candidate
+            mec_record = []
+            haplo_record = []
+            for num_experiment in range(int(data[10][1])):
+                print('Checking for {} clusters ---- {}/{}'.format(ploidy_candidate, num_experiment + 1, int(data[10][1])))
+                # convolutional auto-encoder
+                Input = tf.keras.Input(shape = (4, n_SNV, 1),
+                                       name = 'Input')
+                # convolutional layer - 1
+                conv_1 = tf.keras.layers.Conv2D(filters = filters[0],
+                                                kernel_size = [4, kernel[0]],
+                                                strides = (4, 1),
+                                                padding = 'same',
+                                                name = 'conv_1')(Input)
+                PRelu_1 = tf.keras.layers.PReLU(name = 'PRelu_1')(conv_1)
+                drop_1 = tf.keras.layers.Dropout(drop_prob, name = 'drop_1')(PRelu_1)
+
+                conv_2 = tf.keras.layers.Conv2D(filters = filters[1],
+                                                kernel_size = [1, kernel[1]],
+                                                strides = (1, 1),
+                                                padding = 'same',
+                                                name = 'conv_2')(drop_1)
+                PRelu_2 = tf.keras.layers.PReLU(name = 'PRelu_2')(conv_2)
+                drop_2 = tf.keras.layers.Dropout(drop_prob, name = 'drop_2')(PRelu_2)
+
+                conv_3 = tf.keras.layers.Conv2D(filters = filters[2],
+                                                kernel_size = [1, kernel[2]],
+                                                strides = (1, 1),
+                                                padding = 'same',
+                                                name = 'conv_3')(drop_2)
+                PRelu_3 = tf.keras.layers.PReLU(name = 'PRelu_3')(conv_3)
+                drop_3 = tf.keras.layers.Dropout(drop_prob, name = 'drop_3')(PRelu_3)
+                # flatten
+                flatten = tf.keras.layers.Flatten(name = 'flatten')(drop_3)
+                # code
+                code = tf.keras.layers.Dense(units = len_code,
+                                             name = 'code')(flatten)
+                # dense
+                dense_1 = tf.keras.layers.Dense(units = flatten.shape[1],
+                                                name = 'dense_1')(code)
+                PRelu_4 = tf.keras.layers.PReLU(name = 'PRelu_4')(dense_1)
+                # reshape
+                reshape = tf.keras.layers.Reshape((drop_3.shape[1], drop_3.shape[2], drop_3.shape[3]), 
+                                                   name = 'reshape')(PRelu_4)
+                # transposed convolution layer
+                convT_1 = tf.keras.layers.Conv2DTranspose(filters = filters[1],
+                                                          kernel_size = [1, kernel[2]],
+                                                          strides = (1, 1),
+                                                          padding = 'same',
+                                                          name = 'convT_1')(reshape)
+                PRelu_5 = tf.keras.layers.PReLU(name = 'PRelu_5')(convT_1)
+                drop_4 = tf.keras.layers.Dropout(drop_prob, name = 'drop_4')(PRelu_5)
+
+                convT_2 = tf.keras.layers.Conv2DTranspose(filters = filters[0],
+                                                          kernel_size = [1, kernel[1]],
+                                                          strides = (1, 1),
+                                                          padding = 'same',
+                                                          name = 'convT_2')(drop_4)
+                PRelu_6 = tf.keras.layers.PReLU(name = 'PRelu_6')(convT_2)
+                drop_5 = tf.keras.layers.Dropout(drop_prob, name = 'drop_5')(PRelu_6)
+
+                convT_3 = tf.keras.layers.Conv2DTranspose(filters = 1,
+                                                          kernel_size = [4, kernel[0]],
+                                                          strides = (4, 1),
+                                                          padding = 'same',
+                                                          name = 'convT_3')(drop_5)
+                drop_6 = tf.keras.layers.Dropout(drop_prob, name = 'drop_6')(convT_3)
+
+                # clustering layer
+                clustering_layer = ClusteringLayer(n_clusters, name = 'clustering_layer')(code)
+
+                model = tf.keras.Model(inputs = Input,
+                                       outputs = [drop_6, clustering_layer])
+                model.compile(loss = ['mean_squared_error', 'kld'],
+                              loss_weights = [1 - lam, lam],
+                              optimizer = tf.keras.optimizers.Adam(lr = learning_rate))
+
+                # pretrain
+                pretrain = tf.keras.Model(Input, drop_6)
+                pretrain.compile(loss = 'mean_squared_error',
+                                 optimizer = tf.keras.optimizers.Adam(lr = learning_rate))
+
+                pretrain_history = pretrain.fit(x = SNVonehot,
+                                                y = SNVonehot,
+                                                batch_size = batch_size,
+                                                epochs = n_pretrain_epoch,
+                                                verbose =  None)
+
+                # initialize cluster centers using k-means
+                encoder = tf.keras.Model(Input, code)
+                pretrain_mec = []
+                pretrain_center = []
+                for i in range(10):
+                    kmeans = KMeans(n_clusters = n_clusters, n_init = 30)
+                    y_pred = kmeans.fit_predict(encoder.predict(SNVonehot))
+                    k_means_haplotypes = origin2haplotype(y_pred, SNVmatrix, n_clusters)
+                    pretrain_mec.append(MEC(SNVmatrix, k_means_haplotypes))
+                    pretrain_center.append(kmeans.cluster_centers_)
+                index = np.argmin(pretrain_mec)
+                model.get_layer(name = 'clustering_layer').set_weights([pretrain_center[index]])
+
+                index = 0
+                mec = []
+
+                for i in range(itermax):
+                    if i % update_interval == 0:
+                        _, q = model.predict(SNVonehot)
+                        p = target_distribution_haplo(q, SNVmatrix, n_clusters)
+                        y_pred = q.argmax(1)
+                        haplotypes = origin2haplotype(y_pred, SNVmatrix, n_clusters)
+                        mec.append(MEC(SNVmatrix, haplotypes))
+                        if len(mec) > 1 and mec[-1] == mec[-2]:
+                            break
+
+                    if (index + 1) * batch_size > n_read:
+                        if index * batch_size == n_read:
+                            loss = model.train_on_batch(x = SNVonehot[index * batch_size - 1::],
+                                                        y = [SNVonehot[index * batch_size - 1::], p[index * batch_size - 1::]])
+                        else:
+                            loss = model.train_on_batch(x = SNVonehot[index * batch_size::],
+                                                        y = [SNVonehot[index * batch_size::], p[index * batch_size::]])
+                        index = 0
+                    else:
+                        loss = model.train_on_batch(x = SNVonehot[index * batch_size:(index + 1) * batch_size],
+                                                    y = [SNVonehot[index * batch_size:(index + 1) * batch_size],
+                                                         p[index * batch_size:(index + 1) * batch_size]])
+                        index += 1
+
+                # correction
+                pre_mec = 0
+                mec = MEC(SNVmatrix, haplotypes)
+                count = 0
+                while mec != pre_mec:
+                    index = []
+                    for i in range(SNVmatrix.shape[0]):
+                        dis = np.zeros((haplotypes.shape[0]))
+                        for j in range(haplotypes.shape[0]):
+                            dis[j] = hamming_distance(SNVmatrix[i, :], haplotypes[j, :])
+                        index.append(np.argmin(dis))
+
+                    new_haplo = np.zeros((haplotypes.shape))
+                    for i in range(haplotypes.shape[0]):
+                        new_haplo[i, :] = np.argmax(ACGT_count(SNVmatrix[np.array(index) == i, :]), axis = 1) + 1
+                    haplotypes = new_haplo.copy()
+                    pre_mec = mec
+                    mec = MEC(SNVmatrix, haplotypes)
+                    count += 1
+
+                mec_record.append(mec)
+                haplo_record.append(new_haplo)
+            
+            index = np.argmin(mec_record)
+            viral_record[n_clusters] = haplo_record[index]
+            MEC_record[n_clusters] = mec_record[index]
+        else:
+            continue
+    CR = 1 - MEC_record[ploidy_candidate] / MEC_record[ploidy_candidate - 1]
+    if CR <= MEC_threshold:
+        rank_record[1] = ploidy_candidate - 1
+        ploidy = (rank_record[0] + rank_record[1]) // 2
+    else:
+        rank_record[0] = ploidy_candidate - 1
+        if rank_record[1] == 0:
+            ploidy *= 2
+        else:
+            ploidy = (rank_record[0] + rank_record[1]) // 2 
+
+print('Estimated number of clusters is {}'.format(rank_record[1]))
+n_clusters = rank_record[1]
+result = viral_record[n_clusters]
+# estimate frequencies
+index = []
+for i in range(SNVmatrix.shape[0]):
+    dis = np.zeros((result.shape[0]))
+    for j in range(result.shape[0]):
+        dis[j] = hamming_distance(SNVmatrix[i, :], result[j, :])
+    index.append(np.argmin(dis))
+fre = np.array([np.sum(np.array(index) == i) for i in range(0, len(result))]) / np.sum([np.sum(np.array(index) == i) for i in range(0, len(result))])
+fre_index = np.argsort(fre)[::-1]
+fre = fre[fre_index]
+result = result[fre_index, :]
+
+with open(zone_name + '_Reconstructed_Strains.txt', 'w') as f:
+    for i in range(result.shape[0]):
+        f.write('Virus ' + str(i + 1) + '--fre: ' + str(fre[i])  + '\n')
+        for j in range(result.shape[1]):
+            if result[i, j] == 1:
+                f.write('A')
+            elif result[i, j] == 2:
+                f.write('C')
+            elif result[i, j] == 3:
+                f.write('G')
+            elif result[i, j] == 4:
+                f.write('T')
+            elif result[i, j] == 0:
+                f.write('-')
+        f.write('\n')

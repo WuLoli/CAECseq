@@ -1,0 +1,13 @@
+filename of reference sequence (FASTA) : CAEC_viral.fasta  
+filname of the aligned reads (sam format) : CAEC_viral.sam
+SNP_thres (0.5 / ploidy for haplotype assembly and 0.01 for viral quasispecies) : 0.01
+reconstruction_start : 1
+reconstruction_stop : 5000
+min_mapping_qual : 60
+min_read_length : 70
+max_insert_length : 3000
+characteristic zone name : CAEC_viral
+Initial population size : 3
+Number of experiments : 10
+Which GPU to use (set to -1 if only use CPU; otherwise set to 0, 1, 2 or 3 ... if multiple GPUs are available; check instructions for details) : 1
+MEC improvement threshold(This is used for viral quasispecies reconstruction) : 0.09

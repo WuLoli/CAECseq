@@ -1,0 +1,12 @@
+filename of reference sequence (FASTA) : CAEC_haplo.fasta  
+filname of the aligned reads (sam format) : CAEC_haplo.sam
+SNP_thres (0.5 / ploidy for haplotype assembly and 0 for viral quasispecies) : 0.125
+reconstruction_start : 1
+reconstruction_stop : 5000
+min_mapping_qual : 60
+min_read_length : 70
+max_insert_length : 3000
+characteristic zone name : CAEC_haplo
+K (ploidy) : 4
+Number of experiments : 10
+Which GPU to use (set to -1 if only use CPU; otherwise set to 0, 1, 2 or 3 ... if multiple GPUs are available; check instructions for details) : 1
