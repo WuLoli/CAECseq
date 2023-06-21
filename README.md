@@ -12,3 +12,9 @@ Software requirement:
 Reference:
 -----------------
 Ziqi Ke and Haris Vikalo. "A convolutional auto-encoder for haplotype assembly and viral quasispecies reconstruction," Thirty-fourth Conference on Neural Information Processing Systems (NeurIPS), December 6-12, 2020.<br/>
+
+Pre-trained models and data:
+-----------------
+The pre-trained models and data could be downloaded from the Supplemental section at https://proceedings.neurips.cc/paper/2020/hash/9c449771d0edc923c2713a7462cefa3b-Abstract.html
+1. Please follow the Readme.txt file
+2. The pre-trained models for HIV-1 data are the .h5 files in the HIV-1 folder
